@@ -1,9 +1,13 @@
 package gcache
 
 import (
+	"errors"
+	"json"
+	"net/http"
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/patrickmn/go-cache"
 	logger "github.com/sirupsen/logrus"
 )
@@ -25,14 +29,6 @@ type cacheResponse struct {
 	Status int
 	Header http.Header
 	Data   []byte
-}
-
-type cachedWriter struct {
-	gin.ResponseWriter
-	status  int
-	written bool
-	expire  time.Duration
-	key     string
 }
 
 var _ gin.ResponseWriter = &cachedWriter{}
@@ -66,4 +62,72 @@ func CacheIntercept(expiration time.Duration, handle gin.HandlerFunc) gin.Handle
 			logger.Error(err, "cannot write data", mc)
 		}
 	}
+}
+
+type cachedWriter struct {
+	gin.ResponseWriter
+	status  int
+	written bool
+	expire  time.Duration
+	key     string
+}
+
+// WriteHeader satisfy the built-in interface for writers.
+func (w *cachedWriter) WriteHeader(code int) {
+	w.status = code
+	w.written = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Status satisfy the built-in interface for writers.
+func (w *cachedWriter) Status() int {
+	return w.ResponseWriter.Status()
+}
+
+// Written satisfy the built-in interface for writers.
+func (w *cachedWriter) Written() bool {
+	return w.ResponseWriter.Written()
+}
+
+func (w *cachedWriter) Write(data []byte) (int, error) {
+	ret, err := w.ResponseWriter.Write(data)
+	if err != nil {
+		return 0, errors.New("fail to cache write string")
+	}
+	if w.Status() != 200 {
+		return 0, errors.New("Write: invalid cache status")
+	}
+	val := cacheResponse{
+		w.Status(),
+		w.Header(),
+		data,
+	}
+	b, err := json.Marshal(val)
+	if err != nil {
+		return 0, errors.New("validator cache: failed to marshal cache object")
+	}
+	memoryCache.cache.Set(w.key, b, w.expire)
+	return ret, nil
+}
+
+// WriteString satisfy the built-in interface for writers.
+func (w *cachedWriter) WriteString(data string) (n int, err error) {
+	ret, err := w.ResponseWriter.WriteString(data)
+	if err != nil {
+		return 0, errors.New("fail to cache write string :" + err.Error())
+	}
+	if w.Status() != 200 {
+		return 0, errors.New("WriteString: invalid cache status", errors.Params{"data": data})
+	}
+	val := cacheResponse{
+		w.Status(),
+		w.Header(),
+		[]byte(data),
+	}
+	b, err := json.Marshal(val)
+	if err != nil {
+		return 0, errors.New("validator cache: failed to marshal cache object")
+	}
+	memoryCache.setCache(w.key, b, w.expire)
+	return ret, err
 }
