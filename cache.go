@@ -2,6 +2,7 @@ package gcache
 
 import (
 	"errors"
+	"fmt"
 	"json"
 	"net/http"
 	"sync"
@@ -117,7 +118,7 @@ func (w *cachedWriter) WriteString(data string) (n int, err error) {
 		return 0, errors.New("fail to cache write string :" + err.Error())
 	}
 	if w.Status() != 200 {
-		return 0, errors.New("WriteString: invalid cache status", errors.Params{"data": data})
+		return 0, errors.New("WriteString: invalid cache status : " + data)
 	}
 	val := cacheResponse{
 		w.Status(),
@@ -130,4 +131,42 @@ func (w *cachedWriter) WriteString(data string) (n int, err error) {
 	}
 	memoryCache.setCache(w.key, b, w.expire)
 	return ret, err
+}
+
+// deleteCache remove cache from memory
+func (mc *memCache) deleteCache(key string) {
+	mc.RLock()
+	defer mc.RUnlock()
+	memoryCache.cache.Delete(key)
+}
+
+// setCache save cache inside memory with duration.
+func (mc *memCache) setCache(key string, data interface{}, d time.Duration) {
+	b, err := json.Marshal(data)
+	if err != nil {
+		logger.Error(errors.New(err + "client cache cannot marshal cache object"))
+		return
+	}
+	mc.RLock()
+	defer mc.RUnlock()
+	memoryCache.cache.Set(key, b, d)
+}
+
+// getCache restore cache from memory.
+// It returns the cache and an error if occurs.
+func (mc *memCache) getCache(key string) (cacheResponse, error) {
+	var result cacheResponse
+	c, ok := mc.cache.Get(key)
+	if !ok {
+		return result, fmt.Errorf("gin-cache: invalid cache key %s", key)
+	}
+	r, ok := c.([]byte)
+	if !ok {
+		return result, errors.New("validator cache: failed to cast cache to bytes")
+	}
+	err := json.Unmarshal(r, &result)
+	if err != nil {
+		return result, err
+	}
+	return result, nil
 }
