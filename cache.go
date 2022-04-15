@@ -1,9 +1,13 @@
 package gcache
 
 import (
+	"bytes"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"json"
+	"io/ioutil"
 	"net/http"
 	"sync"
 	"time"
@@ -30,6 +34,14 @@ type cacheResponse struct {
 	Status int
 	Header http.Header
 	Data   []byte
+}
+
+type cachedWriter struct {
+	gin.ResponseWriter
+	status  int
+	written bool
+	expire  time.Duration
+	key     string
 }
 
 var _ gin.ResponseWriter = &cachedWriter{}
@@ -65,12 +77,22 @@ func CacheIntercept(expiration time.Duration, handle gin.HandlerFunc) gin.Handle
 	}
 }
 
-type cachedWriter struct {
-	gin.ResponseWriter
-	status  int
-	written bool
-	expire  time.Duration
-	key     string
+// generates a key for request
+func generateKey(c *gin.Context) string {
+	url := c.Request.URL.String()
+	var b []byte
+	if c.Request.Body != nil {
+		b, _ = ioutil.ReadAll(c.Request.Body)
+		// Restore the io.ReadCloser to its original state
+		c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(b))
+	}
+	hash := sha1.Sum(append([]byte(url), b...))
+	return base64.URLEncoding.EncodeToString(hash[:])
+}
+
+// newCachedWriter create a new cache writer.
+func newCachedWriter(expire time.Duration, writer gin.ResponseWriter, key string) *cachedWriter {
+	return &cachedWriter{writer, 0, false, expire, key}
 }
 
 // WriteHeader satisfy the built-in interface for writers.
@@ -144,7 +166,7 @@ func (mc *memCache) deleteCache(key string) {
 func (mc *memCache) setCache(key string, data interface{}, d time.Duration) {
 	b, err := json.Marshal(data)
 	if err != nil {
-		logger.Error(errors.New(err + "client cache cannot marshal cache object"))
+		logger.Error(errors.New("client cache cannot marshal cache object : " + err.Error()))
 		return
 	}
 	mc.RLock()
